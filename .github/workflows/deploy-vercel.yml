@@ -10,13 +10,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: repo
 
       - name: Debug: show runner filesystem
         run: |
           echo "PWD:" && pwd
           echo "List workspace root:" && ls -la
-          echo "List repository root:" && ls -la $GITHUB_WORKSPACE || true
-          echo "Find my-app folder (top 3 levels):" && find . -maxdepth 3 -name my-app -print -exec ls -la {} \; || true
+          echo "List repo folder:" && ls -la repo || true
+          echo "List repo/my-app:" && ls -la repo/my-app || true
 
 
       - name: Setup Node
@@ -25,21 +27,19 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        working-directory: my-app
         run: |
-          npm install --legacy-peer-deps
+          npm --prefix repo/my-app install --legacy-peer-deps
 
       - name: Build
-        working-directory: my-app
         run: |
-          npm run build
+          npm --prefix repo/my-app run build
 
       - name: Vercel Deploy
         uses: amondnet/vercel-action@v20
         with:
           vercel-token: ${{ secrets.VERCEL_TOKEN }}
           vercel-args: '--prod'
-          working-directory: 'my-app'
+          working-directory: 'repo/my-app'
           vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
           vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
         env:
