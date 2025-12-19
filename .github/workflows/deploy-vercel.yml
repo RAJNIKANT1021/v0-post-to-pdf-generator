@@ -11,6 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Debug: show runner filesystem
+        run: |
+          echo "PWD:" && pwd
+          echo "List workspace root:" && ls -la
+          echo "List repository root:" && ls -la $GITHUB_WORKSPACE || true
+          echo "Find my-app folder (top 3 levels):" && find . -maxdepth 3 -name my-app -print -exec ls -la {} \; || true
+
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
