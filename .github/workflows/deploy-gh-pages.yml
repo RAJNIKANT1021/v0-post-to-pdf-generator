@@ -1,0 +1,39 @@
+name: Deploy to GitHub Pages (static export)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository into repo/
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm --prefix repo/my-app install --legacy-peer-deps
+
+      - name: Build
+        run: |
+          npm --prefix repo/my-app run build
+
+      - name: Export static site
+        run: |
+          npm --prefix repo/my-app run export
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: repo/my-app/out
+          keep_files: false
