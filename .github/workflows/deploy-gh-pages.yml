@@ -14,6 +14,15 @@ jobs:
         with:
           path: repo
 
+      - name: Debug: list repo and my-app contents
+        run: |
+          echo "=== repo ==="
+          ls -la repo || true
+          echo "=== repo/my-app ==="
+          ls -la repo/my-app || true
+          echo "=== repo/my-app tree (depth 2) ==="
+          find repo/my-app -maxdepth 2 -print -exec ls -la {} \; || true
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
