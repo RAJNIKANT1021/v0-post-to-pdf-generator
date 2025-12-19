@@ -20,16 +20,19 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
+        working-directory: repo/my-app
         run: |
-          npm --prefix repo/my-app install --legacy-peer-deps
+          npm install --legacy-peer-deps
 
       - name: Build
+        working-directory: repo/my-app
         run: |
-          npm --prefix repo/my-app run build
+          npm run build
 
       - name: Export static site
+        working-directory: repo/my-app
         run: |
-          npm --prefix repo/my-app run export
+          npm run export
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
