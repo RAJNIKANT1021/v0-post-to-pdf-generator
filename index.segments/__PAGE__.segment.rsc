@@ -1,0 +1,9 @@
+1:"$Sreact.fragment"
+2:I[47257,["/v0-post-to-pdf-generator/_next/static/chunks/42879de7b8087bc9.js"],"ClientPageRoot"]
+3:I[31713,["/v0-post-to-pdf-generator/_next/static/chunks/0c6932420e96e619.js","/v0-post-to-pdf-generator/_next/static/chunks/97930fb0c70edfc6.js"],"default"]
+6:I[97367,["/v0-post-to-pdf-generator/_next/static/chunks/42879de7b8087bc9.js"],"OutletBoundary"]
+7:"$Sreact.suspense"
+0:{"buildId":"NbrFmr9ZuYYGhALyv5nsz","rsc":["$","$1","c",{"children":[["$","$L2",null,{"Component":"$3","serverProvidedParams":{"searchParams":{},"params":{},"promises":["$@4","$@5"]}}],[["$","script","script-0",{"src":"/v0-post-to-pdf-generator/_next/static/chunks/97930fb0c70edfc6.js","async":true}]],["$","$L6",null,{"children":["$","$7",null,{"name":"Next.MetadataOutlet","children":"$@8"}]}]]}],"loading":null,"isPartial":false}
+4:{}
+5:"$0:rsc:props:children:0:props:serverProvidedParams:params"
+8:null
