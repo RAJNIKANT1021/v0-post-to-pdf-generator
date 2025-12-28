@@ -47,8 +47,7 @@ export default function Home() {
     try {
       // Extract images
       setProgress(20)
-      const basePath = process.env.NEXT_PUBLIC_BASE_PATH || ""
-      const extractResponse = await fetch(`${basePath}/api/extract`, {
+      const extractResponse = await fetch("/api/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
@@ -67,7 +66,7 @@ export default function Home() {
       setStatus("generating")
       setProgress(80)
 
-      const pdfResponse = await fetch(`${basePath}/api/generate-pdf`, {
+      const pdfResponse = await fetch("/api/generate-pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(extractData),
