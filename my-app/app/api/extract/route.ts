@@ -35,20 +35,35 @@ function detectPlatform(url: string): string {
 function extractInstagramImages($: cheerio.CheerioAPI): ExtractedImage[] {
   const images: ExtractedImage[] = []
 
-  // Try meta tags first (Open Graph)
-  $('meta[property="og:image"]').each((_, el) => {
-    const content = $(el).attr("content")
-    if (content) {
-      images.push({ url: content, alt: "Instagram post image" })
+  // Method 1: Extract from og:image meta tag (primary method)
+  const ogImage = $('meta[property="og:image"]').attr("content")
+  if (ogImage) {
+    images.push({ url: ogImage, alt: "Instagram post image" })
+  }
+
+  // Method 2: Look for JSON-LD structured data
+  $('script[type="application/ld+json"]').each((_, el) => {
+    try {
+      const jsonData = JSON.parse($(el).text())
+      if (jsonData.image) {
+        const imageUrls = Array.isArray(jsonData.image) ? jsonData.image : [jsonData.image]
+        imageUrls.forEach((img: string | { url: string }) => {
+          const imgUrl = typeof img === "string" ? img : img.url
+          if (imgUrl && !images.some((existing) => existing.url === imgUrl)) {
+            images.push({ url: imgUrl, alt: "Instagram image" })
+          }
+        })
+      }
+    } catch {
+      // Ignore JSON parse errors
     }
   })
 
-  // Try img tags
-  $("img").each((_, el) => {
+  // Method 3: Extract from img tags in the page
+  $("img[src*='cdninstagram']").each((_, el) => {
     const src = $(el).attr("src")
-    const alt = $(el).attr("alt")
-    if (src && src.includes("cdninstagram")) {
-      images.push({ url: src, alt: alt || "Instagram image" })
+    if (src && !images.some((img) => img.url === src)) {
+      images.push({ url: src, alt: "Instagram image" })
     }
   })
 
@@ -119,16 +134,37 @@ function extractMetadata($: cheerio.CheerioAPI, url: string, platform: string): 
     url,
   }
 
-  // Try to get author
-  const ogSiteName = $('meta[property="og:site_name"]').attr("content")
-  const twitterCreator = $('meta[name="twitter:creator"]').attr("content")
-  const author = twitterCreator || ogSiteName
+  // Extract author based on platform
+  if (platform === "Instagram") {
+    // Try JSON-LD for author name
+    $('script[type="application/ld+json"]').each((_, el) => {
+      try {
+        const jsonData = JSON.parse($(el).text())
+        if (jsonData.author?.name) {
+          metadata.author = jsonData.author.name
+        }
+      } catch {
+        // Ignore
+      }
+    })
 
-  if (author) {
-    metadata.author = author.replace("@", "")
+    // Fallback: Try to extract from URL
+    if (!metadata.author) {
+      // Instagram URLs are like /p/DSz5HSOj-oT/ but don't have username in path
+      // Try og:article_author or fall back to site name
+      const ogArticleAuthor = $('meta[property="og:article:author"]').attr("content")
+      if (ogArticleAuthor) {
+        metadata.author = ogArticleAuthor
+      }
+    }
+  } else {
+    // For other platforms, use standard meta tags
+    const ogSiteName = $('meta[property="og:site_name"]').attr("content")
+    const twitterCreator = $('meta[name="twitter:creator"]').attr("content")
+    metadata.author = twitterCreator || ogSiteName
   }
 
-  // Try to get caption/description
+  // Extract caption/description
   const ogDescription = $('meta[property="og:description"]').attr("content")
   const metaDescription = $('meta[name="description"]').attr("content")
   const caption = ogDescription || metaDescription
@@ -137,7 +173,7 @@ function extractMetadata($: cheerio.CheerioAPI, url: string, platform: string): 
     metadata.caption = caption.substring(0, 300) // Limit length
   }
 
-  // Try to get timestamp
+  // Extract timestamp
   const publishedTime = $('meta[property="article:published_time"]').attr("content")
   if (publishedTime) {
     metadata.timestamp = new Date(publishedTime).toLocaleString()
@@ -157,20 +193,28 @@ export async function POST(req: NextRequest) {
     // Detect platform
     const platform = detectPlatform(url)
 
-    // Fetch the page
+    console.log(`[Extract] Processing ${platform} URL: ${url}`)
+
+    // Fetch the page with proper headers
     const response = await fetch(url, {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
       },
+      redirect: "follow",
     })
 
     if (!response.ok) {
-      return NextResponse.json({ error: "Failed to fetch URL" }, { status: 400 })
+      console.error(`[Extract] Failed to fetch URL: ${response.status} ${response.statusText}`)
+      return NextResponse.json({ error: `Failed to fetch URL (${response.status})` }, { status: 400 })
     }
 
     const html = await response.text()
     const $ = cheerio.load(html)
+
+    console.log(`[Extract] HTML loaded, size: ${html.length} bytes`)
 
     // Extract images based on platform
     let images: ExtractedImage[] = []
@@ -183,13 +227,18 @@ export async function POST(req: NextRequest) {
       images = extractGenericImages($)
     }
 
+    console.log(`[Extract] Found ${images.length} images after platform-specific extraction`)
+
     // Remove duplicates
     images = images.filter((img, index, self) => index === self.findIndex((t) => t.url === img.url))
 
     // Limit to reasonable number
     images = images.slice(0, 20)
 
+    console.log(`[Extract] After dedup and limit: ${images.length} images`)
+
     if (images.length === 0) {
+      console.warn(`[Extract] No images found for URL: ${url}`)
       return NextResponse.json(
         { error: "No images found in the post. The URL might not be accessible or supported." },
         { status: 404 },
@@ -199,6 +248,8 @@ export async function POST(req: NextRequest) {
     // Extract metadata
     const metadata = extractMetadata($, url, platform)
 
+    console.log(`[Extract] Metadata extracted: ${metadata.author || "unknown"} on ${metadata.platform}`)
+
     const result: ExtractionResult = {
       images,
       metadata,
@@ -206,7 +257,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result)
   } catch (error) {
-    console.error("[v0] Extraction error:", error)
+    console.error("[Extract] Error:", error instanceof Error ? error.message : error)
     return NextResponse.json(
       { error: "Failed to extract images. Please check the URL and try again." },
       { status: 500 },
