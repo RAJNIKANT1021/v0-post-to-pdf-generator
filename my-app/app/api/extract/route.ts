@@ -35,13 +35,59 @@ function detectPlatform(url: string): string {
 function extractInstagramImages($: cheerio.CheerioAPI): ExtractedImage[] {
   const images: ExtractedImage[] = []
 
-  // Method 1: Extract from og:image meta tag (primary method)
+  // Method 1: Extract from og:image meta tag (primary method for shared links)
   const ogImage = $('meta[property="og:image"]').attr("content")
   if (ogImage) {
     images.push({ url: ogImage, alt: "Instagram post image" })
   }
 
-  // Method 2: Look for JSON-LD structured data
+  // Method 2: Extract scontent URLs from the raw HTML
+  // Get the raw HTML string and search for scontent URLs
+  let html = ""
+  try {
+    $("*").each((_, el) => {
+      const elem = el as any
+      if (elem.children) {
+        elem.children.forEach((child: any) => {
+          if (child.type === "text") {
+            html += child.data
+          }
+        })
+      }
+    })
+  } catch {
+    // Fallback to $.html()
+    try {
+      html = $.html() || ""
+    } catch {
+      html = ""
+    }
+  }
+
+  if (html && html.length > 0) {
+    // Find all scontent URL patterns - they are embedded in the HTML
+    // Looking for: https://scontent...followed by various characters until a quote or tag
+    let match
+    const urlPattern = /https:\/\/scontent-[a-z0-9.-]+\.cdninstagram\.com\/v\/[^"<>]*(?=["\s<])/g
+
+    while ((match = urlPattern.exec(html)) !== null) {
+      const url = match[0]
+      // Decode HTML entities
+      const decodedUrl = url
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .trim()
+
+      if (decodedUrl && !images.some((img) => img.url === decodedUrl)) {
+        images.push({ url: decodedUrl, alt: "Instagram post image" })
+      }
+    }
+  }
+
+  // Method 3: Look for JSON-LD structured data
   $('script[type="application/ld+json"]').each((_, el) => {
     try {
       const jsonData = JSON.parse($(el).text())
@@ -59,7 +105,7 @@ function extractInstagramImages($: cheerio.CheerioAPI): ExtractedImage[] {
     }
   })
 
-  // Method 3: Extract from img tags in the page
+  // Method 4: Extract from img tags in the page
   $("img[src*='cdninstagram']").each((_, el) => {
     const src = $(el).attr("src")
     if (src && !images.some((img) => img.url === src)) {
