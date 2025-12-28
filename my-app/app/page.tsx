@@ -2,15 +2,15 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { FileDown, Link2, Loader2, CheckCircle2, AlertCircle, ImageIcon, Sparkles } from "lucide-react"
+import { FileDown, Link2, Loader2, CheckCircle2, AlertCircle, ImageIcon, Sparkles, X } from "lucide-react"
 import { ThemeToggle } from "@/components/theme-toggle"
 
-type ProcessingStatus = "idle" | "extracting" | "generating" | "complete" | "error"
+type ProcessingStatus = "idle" | "extracting" | "generating" | "complete" | "error" | "stopped"
 
 interface ExtractedImage {
   url: string
@@ -28,21 +28,57 @@ interface ProcessingResult {
   }
 }
 
+const SUPPORTED_PLATFORMS = [
+  { name: "Instagram", pattern: /instagram\.com/ },
+  { name: "Twitter/X", pattern: /twitter\.com|x\.com/ },
+  { name: "Facebook", pattern: /facebook\.com|fb\.com/ },
+  { name: "LinkedIn", pattern: /linkedin\.com/ },
+  { name: "TikTok", pattern: /tiktok\.com/ },
+]
+
 export default function Home() {
   const [url, setUrl] = useState("")
   const [status, setStatus] = useState<ProcessingStatus>("idle")
   const [result, setResult] = useState<ProcessingResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState(0)
+  const abortControllerRef = useRef<AbortController | null>(null)
+
+  const validateUrl = (urlString: string): { valid: boolean; platform?: string; error?: string } => {
+    try {
+      new URL(urlString)
+    } catch {
+      return { valid: false, error: "Please enter a valid URL" }
+    }
+
+    const supported = SUPPORTED_PLATFORMS.find((p) => p.pattern.test(urlString.toLowerCase()))
+    if (!supported) {
+      return {
+        valid: false,
+        error: `Unsupported platform. Try: ${SUPPORTED_PLATFORMS.map((p) => p.name).join(", ")}`,
+      }
+    }
+
+    return { valid: true, platform: supported.name }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!url.trim()) return
 
+    const validation = validateUrl(url)
+    if (!validation.valid) {
+      setError(validation.error || "Invalid URL")
+      setStatus("error")
+      return
+    }
+
     setStatus("extracting")
     setError(null)
     setResult(null)
     setProgress(0)
+
+    abortControllerRef.current = new AbortController()
 
     try {
       // Extract images
@@ -51,36 +87,43 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
+        signal: abortControllerRef.current.signal,
       })
 
       if (!extractResponse.ok) {
         const errorData = await extractResponse.json()
-        throw new Error(errorData.error || "Failed to extract images")
+        throw new Error(errorData.error || "Failed to extract images from this post")
       }
 
       const extractData = await extractResponse.json()
+
+      if (!extractData.images || extractData.images.length === 0) {
+        throw new Error("No images found in this post. Try a post with images.")
+      }
+
       setResult(extractData)
       setProgress(60)
 
       // Generate PDF
       setStatus("generating")
-      setProgress(80)
+      setProgress(70)
 
       const pdfResponse = await fetch("/api/generate-pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(extractData),
+        signal: abortControllerRef.current.signal,
       })
 
       if (!pdfResponse.ok) {
-        throw new Error("Failed to generate PDF")
+        throw new Error("Failed to generate PDF. Please try again.")
       }
 
       const blob = await pdfResponse.blob()
       const downloadUrl = window.URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = downloadUrl
-      a.download = `post-${Date.now()}.pdf`
+      a.download = `post-${extractData.metadata.platform}-${Date.now()}.pdf`
       document.body.appendChild(a)
       a.click()
       window.URL.revokeObjectURL(downloadUrl)
@@ -89,9 +132,29 @@ export default function Home() {
       setProgress(100)
       setStatus("complete")
     } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred")
-      setStatus("error")
+      if (err instanceof Error && err.name === "AbortError") {
+        setStatus("stopped")
+        setError("Download cancelled")
+      } else {
+        setError(err instanceof Error ? err.message : "An unexpected error occurred. Please try again.")
+        setStatus("error")
+      }
+    } finally {
+      abortControllerRef.current = null
     }
+  }
+
+  const handleStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      setStatus("stopped")
+      setError("Process stopped by user")
+      setProgress(0)
+    }
+  }
+
+  const handleRetry = () => {
+    handleSubmit({ preventDefault: () => {} } as React.FormEvent)
   }
 
   const handleReset = () => {
@@ -140,7 +203,7 @@ export default function Home() {
             <span className="text-foreground">in Seconds</span>
           </h2>
           <p className="text-base sm:text-lg md:text-xl text-muted-foreground text-balance max-w-2xl mx-auto px-4">
-            Extract images and metadata from Instagram, Twitter, and more. Generate professional PDFs instantly.
+            Extract images and metadata from Instagram, Twitter/X, Facebook, LinkedIn, and TikTok posts. Generate professional PDFs instantly.
           </p>
         </div>
 
@@ -164,7 +227,7 @@ export default function Home() {
                 required
               />
               <p className="text-xs text-muted-foreground">
-                Supports Instagram, Twitter/X, Facebook, LinkedIn, and more
+                Supports: Instagram • Twitter/X • Facebook • LinkedIn • TikTok
               </p>
             </div>
 
@@ -178,21 +241,55 @@ export default function Home() {
                 Generate PDF
               </Button>
             ) : status === "complete" ? (
-              <Button
-                type="button"
-                onClick={handleReset}
-                size="lg"
-                className="w-full h-11 sm:h-12 text-sm sm:text-base"
-                variant="secondary"
-              >
-                Convert Another Post
-              </Button>
-            ) : (
-              <Button type="button" size="lg" className="w-full h-11 sm:h-12 text-sm sm:text-base" disabled>
-                <Loader2 className="mr-2 h-4 w-4 sm:h-5 sm:w-5 animate-spin" />
-                {status === "extracting" ? "Extracting Images..." : "Generating PDF..."}
-              </Button>
-            )}
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  onClick={handleReset}
+                  size="lg"
+                  className="flex-1 h-11 sm:h-12 text-sm sm:text-base"
+                  variant="secondary"
+                >
+                  Convert Another
+                </Button>
+              </div>
+            ) : status === "extracting" || status === "generating" ? (
+              <div className="flex gap-2">
+                <Button type="button" size="lg" className="flex-1 h-11 sm:h-12 text-sm sm:text-base" disabled>
+                  <Loader2 className="mr-2 h-4 w-4 sm:h-5 sm:w-5 animate-spin" />
+                  {status === "extracting" ? "Extracting Images..." : "Generating PDF..."}
+                </Button>
+                <Button
+                  type="button"
+                  onClick={handleStop}
+                  size="lg"
+                  variant="destructive"
+                  className="h-11 sm:h-12 px-3 sm:px-4"
+                >
+                  <X className="h-4 w-4 sm:h-5 sm:w-5" />
+                  <span className="hidden sm:inline ml-2">Stop</span>
+                </Button>
+              </div>
+            ) : status === "error" || status === "stopped" ? (
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  onClick={handleRetry}
+                  size="lg"
+                  className="flex-1 h-11 sm:h-12 text-sm sm:text-base bg-gradient-to-r from-accent to-primary"
+                >
+                  Try Again
+                </Button>
+                <Button
+                  type="button"
+                  onClick={handleReset}
+                  size="lg"
+                  variant="secondary"
+                  className="h-11 sm:h-12"
+                >
+                  Reset
+                </Button>
+              </div>
+            ) : null}
           </form>
 
           {/* Progress Bar */}
@@ -214,17 +311,19 @@ export default function Home() {
           <Alert className="mb-6 sm:mb-8 border-accent/50 bg-gradient-to-r from-accent/10 to-primary/10">
             <CheckCircle2 className="h-4 w-4 text-accent" />
             <AlertDescription className="text-sm sm:text-base">
-              PDF generated successfully! Found {result.images.length} image{result.images.length !== 1 ? "s" : ""} from{" "}
-              {result.metadata.platform}.
+              ✓ PDF generated successfully! Downloaded with {result.images.length} image{result.images.length !== 1 ? "s" : ""} from{" "}
+              <span className="font-semibold text-accent">{result.metadata.platform}</span>.
             </AlertDescription>
           </Alert>
         )}
 
         {/* Error Alert */}
-        {status === "error" && error && (
+        {(status === "error" || status === "stopped") && error && (
           <Alert className="mb-6 sm:mb-8 border-destructive/50 bg-destructive/10">
             <AlertCircle className="h-4 w-4 text-destructive" />
-            <AlertDescription className="text-sm sm:text-base">{error}</AlertDescription>
+            <AlertDescription className="text-sm sm:text-base">
+              <span className="font-semibold">Error:</span> {error}
+            </AlertDescription>
           </Alert>
         )}
 
@@ -259,13 +358,13 @@ export default function Home() {
                 {result.metadata.author && (
                   <div className="flex justify-between gap-4">
                     <span className="text-muted-foreground">Author:</span>
-                    <span className="font-medium truncate">{result.metadata.author}</span>
+                    <span className="font-medium truncate">@{result.metadata.author}</span>
                   </div>
                 )}
-                {result.metadata.timestamp && (
+                {result.metadata.caption && (
                   <div className="flex justify-between gap-4">
-                    <span className="text-muted-foreground">Posted:</span>
-                    <span className="font-medium">{result.metadata.timestamp}</span>
+                    <span className="text-muted-foreground">Caption:</span>
+                    <span className="font-medium text-right line-clamp-2">{result.metadata.caption}</span>
                   </div>
                 )}
               </div>
@@ -282,7 +381,7 @@ export default function Home() {
             </div>
             <h3 className="font-semibold mb-2 text-sm sm:text-base">Multi-Platform Support</h3>
             <p className="text-xs sm:text-sm text-muted-foreground leading-relaxed">
-              Works with Instagram, Twitter, Facebook, LinkedIn, and other popular platforms
+              Instagram, Twitter/X, Facebook, LinkedIn, TikTok, and more
             </p>
           </Card>
 
@@ -293,7 +392,7 @@ export default function Home() {
             </div>
             <h3 className="font-semibold mb-2 text-sm sm:text-base">High Quality Images</h3>
             <p className="text-xs sm:text-sm text-muted-foreground leading-relaxed">
-              Extracts images in their original resolution for professional results
+              Original resolution images with metadata preservation
             </p>
           </Card>
 
@@ -304,7 +403,7 @@ export default function Home() {
             </div>
             <h3 className="font-semibold mb-2 text-sm sm:text-base">Instant PDF Generation</h3>
             <p className="text-xs sm:text-sm text-muted-foreground leading-relaxed">
-              Get professional PDFs with metadata headers and footers in seconds
+              Professional PDFs with headers, footers, and metadata
             </p>
           </Card>
         </div>
