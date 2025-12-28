@@ -89,6 +89,37 @@ function extractTwitterImages($: cheerio.CheerioAPI): ExtractedImage[] {
     }
   })
 
+  // Twitter/X card images
+  $('meta[name="twitter:image:src"]').each((_, el) => {
+    const content = $(el).attr("content")
+    if (content && !images.some((img) => img.url === content)) {
+      images.push({ url: content, alt: "Twitter image" })
+    }
+  })
+
+  return images
+}
+
+// Extract images from LinkedIn
+function extractLinkedInImages($: cheerio.CheerioAPI): ExtractedImage[] {
+  const images: ExtractedImage[] = []
+
+  // LinkedIn og:image
+  $('meta[property="og:image"]').each((_, el) => {
+    const content = $(el).attr("content")
+    if (content && content.includes("linkedin")) {
+      images.push({ url: content, alt: "LinkedIn post image" })
+    }
+  })
+
+  // LinkedIn img tags with specific patterns
+  $("img[src*='licdn']").each((_, el) => {
+    const src = $(el).attr("src")
+    if (src && !images.some((img) => img.url === src)) {
+      images.push({ url: src, alt: "LinkedIn image" })
+    }
+  })
+
   return images
 }
 
@@ -187,31 +218,124 @@ export async function POST(req: NextRequest) {
     const { url } = await req.json()
 
     if (!url || typeof url !== "string") {
-      return NextResponse.json({ error: "Valid URL is required" }, { status: 400 })
+      return NextResponse.json({ error: "Please provide a valid post URL" }, { status: 400 })
     }
 
-    // Detect platform
-    const platform = detectPlatform(url)
+    // Clean up the URL (remove query parameters if not needed)
+    let cleanUrl = url.trim()
 
-    console.log(`[Extract] Processing ${platform} URL: ${url}`)
+    // Detect platform
+    const platform = detectPlatform(cleanUrl)
+    if (platform === "Unknown") {
+      return NextResponse.json(
+        { error: "Unsupported platform. Try Instagram, Twitter/X, Facebook, or LinkedIn posts." },
+        { status: 400 },
+      )
+    }
+
+    console.log(`[Extract] Processing ${platform} URL: ${cleanUrl}`)
 
     // Fetch the page with proper headers
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-      },
-      redirect: "follow",
-    })
+    let response: Response
+    try {
+      response = await fetch(cleanUrl, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.5",
+          Referer: platform === "Instagram" ? "https://www.instagram.com/" : "https://www.google.com/",
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(10000), // 10 second timeout
+      })
+    } catch (fetchError) {
+      console.error(`[Extract] Fetch timeout or error: ${fetchError}`)
+      return NextResponse.json(
+        { error: "Could not reach the post. Please check the URL and try again." },
+        { status: 400 },
+      )
+    }
+
+    // Handle specific HTTP status codes
+    if (response.status === 404) {
+      console.warn(`[Extract] Post not found: ${cleanUrl}`)
+      return NextResponse.json(
+        { error: "Post not found. The URL may be broken or the post might have been deleted." },
+        { status: 404 },
+      )
+    }
+
+    if (response.status === 403) {
+      console.warn(`[Extract] Access forbidden (likely private): ${cleanUrl}`)
+      return NextResponse.json(
+        {
+          error: "This post is private or you don't have permission to access it. Please check if the post is public.",
+        },
+        { status: 403 },
+      )
+    }
+
+    if (response.status === 429) {
+      console.warn(`[Extract] Rate limited: ${cleanUrl}`)
+      return NextResponse.json(
+        {
+          error: "Too many requests. Please wait a moment and try again.",
+        },
+        { status: 429 },
+      )
+    }
 
     if (!response.ok) {
       console.error(`[Extract] Failed to fetch URL: ${response.status} ${response.statusText}`)
-      return NextResponse.json({ error: `Failed to fetch URL (${response.status})` }, { status: 400 })
+      return NextResponse.json(
+        { error: `Failed to access post (Error: ${response.status})` },
+        { status: 400 },
+      )
     }
 
     const html = await response.text()
+
+    // Check if content indicates a private/deleted post
+    if (platform === "Instagram") {
+      if (html.includes('"private":true') || html.includes("This account is private")) {
+        console.warn(`[Extract] Instagram post is private`)
+        return NextResponse.json(
+          {
+            error: "This Instagram post is private. Make sure the account is public and try again.",
+          },
+          { status: 403 },
+        )
+      }
+      if (html.includes("Sorry, this page isn't available") || html.includes("Oops, something went wrong")) {
+        console.warn(`[Extract] Instagram post not found or deleted`)
+        return NextResponse.json(
+          { error: "This Instagram post might be deleted or no longer available." },
+          { status: 404 },
+        )
+      }
+    }
+
+    if (platform === "Twitter/X") {
+      if (html.includes("This post is from a private account") || html.includes("You're not able to see this")) {
+        console.warn(`[Extract] Twitter post is private`)
+        return NextResponse.json(
+          { error: "This post is from a private account or has been deleted." },
+          { status: 403 },
+        )
+      }
+    }
+
+    if (platform === "LinkedIn") {
+      if (html.includes("You don't have permission") || html.includes("This post isn't available")) {
+        console.warn(`[Extract] LinkedIn post not accessible`)
+        return NextResponse.json(
+          { error: "This LinkedIn post isn't publicly available or has been deleted." },
+          { status: 403 },
+        )
+      }
+    }
+
     const $ = cheerio.load(html)
 
     console.log(`[Extract] HTML loaded, size: ${html.length} bytes`)
@@ -223,6 +347,8 @@ export async function POST(req: NextRequest) {
       images = extractInstagramImages($)
     } else if (platform === "Twitter/X") {
       images = extractTwitterImages($)
+    } else if (platform === "LinkedIn") {
+      images = extractLinkedInImages($)
     } else {
       images = extractGenericImages($)
     }
@@ -238,17 +364,19 @@ export async function POST(req: NextRequest) {
     console.log(`[Extract] After dedup and limit: ${images.length} images`)
 
     if (images.length === 0) {
-      console.warn(`[Extract] No images found for URL: ${url}`)
+      console.warn(`[Extract] No images found for URL: ${cleanUrl}`)
       return NextResponse.json(
-        { error: "No images found in the post. The URL might not be accessible or supported." },
-        { status: 404 },
+        {
+          error: `No images found in this ${platform} post. Posts without images or videos cannot be converted.`,
+        },
+        { status: 400 },
       )
     }
 
     // Extract metadata
-    const metadata = extractMetadata($, url, platform)
+    const metadata = extractMetadata($, cleanUrl, platform)
 
-    console.log(`[Extract] Metadata extracted: ${metadata.author || "unknown"} on ${metadata.platform}`)
+    console.log(`[Extract] Successfully extracted ${images.length} images from ${platform}`)
 
     const result: ExtractionResult = {
       images,
@@ -257,9 +385,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result)
   } catch (error) {
-    console.error("[Extract] Error:", error instanceof Error ? error.message : error)
+    console.error("[Extract] Unexpected error:", error instanceof Error ? error.message : error)
     return NextResponse.json(
-      { error: "Failed to extract images. Please check the URL and try again." },
+      { error: "Something went wrong. Please try again or try a different post." },
       { status: 500 },
     )
   }
